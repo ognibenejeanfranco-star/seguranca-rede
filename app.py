@@ -37,7 +37,12 @@ carregar_db()
 
 def enviar_email(mac, ip, total):
     try:
-        msg = MIMEText(f"""
+        # SALVA alerta em arquivo (você vê no servidor)
+        with open('/tmp/alertas_seguranca.txt', 'a') as f:
+            f.write(f"🚨 ATAQUE {datetime.now()}: {mac} {ip} {total}x\n")
+        print(f"🚨 ATAQUE LOCAL: {mac} {ip} {total}x")
+    except Exception as e:
+        print(f"❌ Erro local: {e}")
 🚨 ALERTA DE SEGURANÇA - ATAQUE DETECTADO
 
 MAC/IP: {mac}
