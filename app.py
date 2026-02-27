@@ -2,82 +2,136 @@ from flask import Flask, request, jsonify
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
+import threading
+import time
 import os
+import json
 
 app = Flask(__name__)
-GMAIL_PASSWORD = 'baxbvdjpmvzsvmds'
 
-# Armazenamento simples
-alertas_hoje = {}
-bloqueados_mac = {}
+# ============================
+# CONFIGURAÇÕES FIXAS
+# ============================
+GMAIL_USER = "ognibenejeanfranco@gmail.com"
+GMAIL_APP_PASSWORD = "rwbwneipsjctgmul"  # ← TROCAR PELA NOVA!
+LIMITE_ALERTAS = 5
+RESET_HORAS = 24
 
-@app.route('/log', methods=['POST'])
-def log():
-    dados = request.json
-    timestamp = datetime.now()
-    mac = dados.get('mac', 'unknown')
-    ip = dados.get('ip', 'unknown')
-    tipo = dados.get('tipo', 'unknown')
-    detalhes = dados.get('detalhes', '')
-    
-    print(f"[{timestamp.strftime('%H:%M:%S')}] MAC:{mac} IP:{ip} TIPO:{tipo}")
-    
-    chave = f"{mac}_{ip}"
-    
-    # RADIUS BRUTEFORCE (5+ falhas)
-    if tipo == 'radius_falha':
-        if chave not in alertas_hoje:
-            alertas_hoje[chave] = 0
-        alertas_hoje[chave] += 1
-        
-        if alertas_hoje[chave] >= 5:
-            enviar_alerta(f"🚨 BRUTEFORCE!\nMAC: {mac}\nIP: {ip}\nTentativas: {alertas_hoje[chave]}")
-            bloqueados_mac[mac] = True
-    
-    # MALWARE DNS (IMEDIATO)
-    elif tipo == 'dns_bloqueado' and ('malware' in detalhes.lower() or 'virus' in detalhes.lower()):
-        print("🚨 MALWARE DETECTADO - enviando alerta!")
-        enviar_alerta(f"⚠️ MALWARE BLOQUEADO!\nMAC: {mac}\nIP: {ip}\nDomínio: {detalhes}")
-    
-    return jsonify({
-        "status": "ok", 
-        "bloqueado": mac in bloqueados_mac,
-        "alertas": alertas_hoje.get(chave, 0)
-    })
+# Armazenamento em memória (persiste em arquivo)
+alertas_db = {}
+db_file = '/tmp/seguranca_db.json'
 
-@app.route('/status/<mac>')
-def status(mac):
-    return jsonify({
-        "mac": mac,
-        "bloqueado": mac in bloqueados_mac,
-        "total_alertas": sum(alertas_hoje.values())
-    })
-
-@app.route('/relatorio')
-def relatorio():
-    total = sum(alertas_hoje.values())
-    if total > 0:
-        enviar_alerta(f"📊 RELATÓRIO DIÁRIO\nTotal incidentes: {total}\nMACs bloqueados: {len(bloqueados_mac)}")
-        alertas_hoje.clear()
-    return jsonify({"status": "ok", "incidentes": total})
-
-def enviar_alerta(mensagem):
+def carregar_db():
+    global alertas_db
     try:
-        msg = MIMEText(f"{mensagem}\n\nEnviado: {datetime.now().strftime('%d/%m %H:%M:%S')}")
-        msg['Subject'] = '🚨 ALERTA SEGURANÇA'
-        msg['From'] = 'ognibenejeanfranco@gmail.com'
-        msg['To'] = 'ognibenejeanfranco@gmail.com'
-        
+        with open(db_file, 'r') as f:
+            alertas_db = json.load(f)
+    except:
+        alertas_db = {}
+
+def salvar_db():
+    with open(db_file, 'w') as f:
+        json.dump(alertas_db, f)
+
+carregar_db()
+
+def enviar_email(mac, ip, total):
+    try:
+        msg = MIMEText(f"""
+🚨 ALERTA DE SEGURANÇA - ATAQUE DETECTADO
+
+MAC/IP: {mac}
+IP: {ip}
+Total tentativas: {total}
+Horário: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+BLOQUEIO AUTOMÁTICO ATIVADO!
+        """)
+        msg['Subject'] = f'🚨 ATAQUE RADIUS: {mac} ({total}x)'
+        msg['From'] = GMAIL_USER
+        msg['To'] = GMAIL_USER
+
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
-        server.login('ognibenejeanfranco@gmail.com', GMAIL_PASSWORD)
+        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         server.send_message(msg)
         server.quit()
-        
-        print(f"✅ EMAIL ENVIADO: {mensagem[:50]}")
+        print(f"✅ Email enviado para {mac}")
     except Exception as e:
-        print(f"❌ ERRO EMAIL: {e}")
+        print(f"❌ Erro email: {e}")
+
+def reset_alerta(mac):
+    if mac in alertas_db:
+        del alertas_db[mac]
+
+@app.route('/log', methods=['POST'])
+def log_evento():
+    data = request.json
+    if not data:
+        return jsonify({"error": "JSON inválido"}), 400
+    
+    tipo = data.get('tipo', 'desconhecido')
+    ip = data.get('ip', 'unknown')
+    mac = data.get('mac', f"USER_{ip}")
+    detalhes = data.get('detalhes', '')
+    
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] MAC:{mac} IP:{ip} TIPO:{tipo}")
+    
+    if mac not in alertas_db:
+        alertas_db[mac] = {
+            'ultimo_alerta': datetime.now().isoformat(),
+            'total': 0,
+            'ip': ip
+        }
+    
+    # Incrementa contador
+    alertas_db[mac]['total'] += 1
+    alertas_db[mac]['ultimo_alerta'] = datetime.now().isoformat()
+    alertas_db[mac]['ip'] = ip
+    
+    total = alertas_db[mac]['total']
+    
+    # Verifica limite e dispara email
+    if total >= LIMITE_ALERTAS:
+        print(f"🚨 ATAQUE! {mac}: {total} tentativas")
+        threading.Thread(target=enviar_email, args=(mac, ip, total)).start()
+        alertas_db[mac]['bloqueado'] = True
+    else:
+        print(f"⚠️ Alerta {total}/{LIMITE_ALERTAS}: {mac}")
+    
+    salvar_db()
+    
+    return jsonify({
+        "status": "ok",
+        "alertas": total,
+        "bloqueado": alertas_db[mac].get('bloqueado', False),
+        "mac": mac
+    })
+
+@app.route('/status/<mac>', methods=['GET'])
+def status(mac):
+    if mac in alertas_db:
+        return jsonify({
+            "mac": mac,
+            "total_alertas": alertas_db[mac]['total'],
+            "bloqueado": alertas_db[mac].get('bloqueado', False),
+            "ip": alertas_db[mac].get('ip', 'unknown'),
+            "ultimo_alerta": alertas_db[mac].get('ultimo_alerta', '')
+        })
+    return jsonify({
+        "mac": mac,
+        "total_alertas": 0,
+        "bloqueado": False
+    })
+
+@app.route('/status/<mac>', methods=['DELETE'])
+def reset(mac):
+    if mac in alertas_db:
+        del alertas_db[mac]
+        salvar_db()
+    return jsonify({"status": "reset", "mac": mac})
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    print("🚀 Agente IA Segurança iniciado!")
+    carregar_db()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
