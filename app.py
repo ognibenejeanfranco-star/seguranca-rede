@@ -13,7 +13,7 @@ app = Flask(__name__)
 # CONFIGURAÇÕES FIXAS
 # ============================
 GMAIL_USER = "ognibenejeanfranco@gmail.com"
-GMAIL_APP_PASSWORD = "rwbwneipsjctgmul"  # ← TROCAR PELA NOVA!
+GMAIL_APP_PASSWORD = "rwbwneipsjctgmul"
 LIMITE_ALERTAS = 5
 RESET_HORAS = 24
 
@@ -30,44 +30,37 @@ def carregar_db():
         alertas_db = {}
 
 def salvar_db():
-    with open(db_file, 'w') as f:
-        json.dump(alertas_db, f)
+    try:
+        with open(db_file, 'w') as f:
+            json.dump(alertas_db, f)
+    except:
+        pass
 
 carregar_db()
 
 def enviar_email(mac, ip, total):
     try:
-        # SALVA alerta em arquivo (você vê no servidor)
-        with open('/tmp/alertas_seguranca.txt', 'a') as f:
-            f.write(f"🚨 ATAQUE {datetime.now()}: {mac} {ip} {total}x\n")
-        print(f"🚨 ATAQUE LOCAL: {mac} {ip} {total}x")
-    except Exception as e:
-        print(f"❌ Erro local: {e}")
-🚨 ALERTA DE SEGURANÇA - ATAQUE DETECTADO
+        # ALERTA LOCAL (Render permite)
+        alerta_texto = f"""
+🚨 ATAQUE RADIUS DETECTADO! {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 MAC/IP: {mac}
 IP: {ip}
-Total tentativas: {total}
-Horário: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Tentativas: {total}
+LIMITE: {LIMITE_ALERTAS}
 
 BLOQUEIO AUTOMÁTICO ATIVADO!
-        """)
-        msg['Subject'] = f'🚨 ATAQUE RADIUS: {mac} ({total}x)'
-        msg['From'] = GMAIL_USER
-        msg['To'] = GMAIL_USER
-
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        print(f"✅ Email enviado para {mac}")
+        """
+        
+        # Salva em arquivo (você vê no log Render)
+        with open('/tmp/alertas_seguranca.txt', 'a') as f:
+            f.write(alerta_texto + "\n" + "="*50 + "\n")
+        
+        print(alerta_texto)
+        print(f"📁 Alerta salvo em /tmp/alertas_seguranca.txt")
+        
     except Exception as e:
-        print(f"❌ Erro email: {e}")
-
-def reset_alerta(mac):
-    if mac in alertas_db:
-        del alertas_db[mac]
+        print(f"❌ Erro alerta local: {e}")
 
 @app.route('/log', methods=['POST'])
 def log_evento():
@@ -96,7 +89,7 @@ def log_evento():
     
     total = alertas_db[mac]['total']
     
-    # Verifica limite e dispara email
+    # Verifica limite e dispara alerta
     if total >= LIMITE_ALERTAS:
         print(f"🚨 ATAQUE! {mac}: {total} tentativas")
         threading.Thread(target=enviar_email, args=(mac, ip, total)).start()
@@ -135,6 +128,13 @@ def reset(mac):
         del alertas_db[mac]
         salvar_db()
     return jsonify({"status": "reset", "mac": mac})
+
+@app.route('/alertas', methods=['GET'])
+def listar_alertas():
+    return jsonify({
+        "total_ativos": len(alertas_db),
+        "alertas": {k: v['total'] for k, v in alertas_db.items()}
+    })
 
 if __name__ == '__main__':
     print("🚀 Agente IA Segurança iniciado!")
