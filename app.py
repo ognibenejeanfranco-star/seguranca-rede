@@ -6,6 +6,7 @@ import threading
 import time
 import os
 import json
+import subprocess
 
 app = Flask(__name__)
 
@@ -40,6 +41,10 @@ carregar_db()
 
 def enviar_email(mac, ip, total):
     try:
+        # 🚨 BLOQUEIO REAL IPSET - SÓ ADICIONADO AQUI
+        subprocess.run(['sudo', '/usr/local/bin/bloqueio_radius.sh', ip, mac], 
+                      capture_output=True, timeout=10)
+        
         # ALERTA LOCAL (Render permite)
         alerta_texto = f"""
 🚨 ATAQUE RADIUS DETECTADO! {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -49,7 +54,7 @@ IP: {ip}
 Tentativas: {total}
 LIMITE: {LIMITE_ALERTAS}
 
-BLOQUEIO AUTOMÁTICO ATIVADO!
+🔒 BLOQUEIO REAL ATIVADO (ipset/iptables)!
         """
         
         # Salva em arquivo (você vê no log Render)
